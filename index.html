@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>斜面實驗室 - 實測數據圖表版</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: "Microsoft JhengHei", sans-serif; background-color: #f4f7f9; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        .lab-box { background: white; padding: 25px; border-radius: 20px; box-shadow: 0 8px 30px rgba(0,0,0,0.1); width: 1000px; max-width: 95%; }
+        h1 { color: #2c3e50; text-align: center; margin-bottom: 5px; }
+        .main-layout { display: flex; gap: 20px; margin-bottom: 20px; }
+        .sim-section { flex: 1.5; }
+        .chart-section { flex: 1.2; background: #fff; padding: 15px; border-radius: 12px; border: 1px solid #eee; }
+        #simCanvas { background: #ffffff; border-bottom: 4px solid #34495e; display: block; width: 100%; border-radius: 8px; }
+        .ui-panel { display: flex; justify-content: space-between; align-items: center; margin: 15px 0; padding: 10px 15px; background: #f1f3f5; border-radius: 12px; }
+        .slider-group { flex: 1; }
+        input[type="range"] { width: 160px; cursor: pointer; }
+        button { padding: 10px 15px; font-size: 14px; cursor: pointer; border: none; border-radius: 8px; font-weight: bold; }
+        #runBtn { background: #27ae60; color: white; }
+        #clearBtn { background: #95a5a6; color: white; }
+        .table-section { margin-top: 10px; max-height: 200px; overflow-y: auto; border: 1px solid #eee; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { border: 1px solid #dee2e6; padding: 8px; text-align: center; }
+        th { background-color: #2c3e50; color: white; position: sticky; top: 0; }
+        .avg-row { background-color: #fff3cd !important; font-weight: bold; }
+        .highlight { color: #d35400; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="lab-box">
+    <h1>📐 Phiklin5 的AI斜面碰撞模擬 - 實測數據圖表版</h1>
+    
+    <div class="main-layout">
+        <div class="sim-section">
+            <canvas id="simCanvas" width="600" height="250"></canvas>
+            <div class="ui-panel">
+                <div class="slider-group">
+                    <label>坡度角度：<span id="angleText" class="highlight">30</span>°</label><br>
+                    <input type="range" id="angleRange" min="10" max="70" value="30" step="10">
+                </div>
+                <div class="button-group">
+                    <button id="runBtn">放手實驗！</button>
+                    <button id="clearBtn" style="margin-left:5px;">重設數據</button>
+                </div>
+                <div style="font-size:0.9em;">狀態：<span id="status">準備中</span></div>
+            </div>
+            <div class="table-section">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>角度 (°)</th>
+                            <th>測量次數</th>
+                            <th>距離 (cm)</th>
+                            <th>平均值 (cm)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dataTable"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="chart-section">
+            <h3 style="text-align:center; margin-top:0;">📊 實測趨勢圖</h3>
+            <canvas id="trendChart"></canvas>
+            <p style="font-size: 0.8em; color: #666; text-align: center;">圖表 X 軸從 0° 開始，僅顯示實測角度之連線。</p>
+        </div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d');
+    const angleRange = document.getElementById('angleRange');
+    const angleText = document.getElementById('angleText');
+    const runBtn = document.getElementById('runBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const dataTable = document.getElementById('dataTable');
+    const status = document.getElementById('status');
+
+    const L = 220; 
+    const startX = 60;
+    const groundY = 220;
+    const ballR = 10;
+    const capSize = { w: 20, h: 8 };
+
+    let isPlaying = false;
+    let records = {}; 
+    let ball = { s: 0, x: 0, y: 0 };
+    let cap = { x: 0, slide: 0, targetSlide: 0 };
+    let currentAngle = 30;
+    let myChart;
+
+    // --- 初始化 Chart.js ---
+    function initChart() {
+        const chartCtx = document.getElementById('trendChart').getContext('2d');
+        myChart = new Chart(chartCtx, {
+            type: 'line',
+            data: {
+                // X 軸固定標籤從 0 到 70
+                labels: [0, 10, 20, 30, 40, 50, 60, 70], 
+                datasets: [{
+                    label: '平均移動距離',
+                    // 初始全為空，連 0 度都不預設點，除非你想要手動加一個 (0,0) 的點
+                    data: Array(8).fill(null), 
+                    borderColor: '#3498db',
+                    backgroundColor: 'rgba(52, 152, 219, 0.2)',
+                    borderWidth: 3,
+                    tension: 0.2,
+                    fill: false, // 實驗圖通常不填充，更清晰
+                    pointRadius: 6,
+                    spanGaps: true // 讓實測點之間可以跨越連線
+                }]
+            },
+            options: {
+                scales: {
+                    x: {
+                        title: { display: true, text: '坡度角度 (°)' },
+                        min: 0,
+                        max: 70
+                    },
+                    y: {
+                        title: { display: true, text: '移動距離 (cm)' },
+                        beginAtZero: true,
+                        suggestedMax: 50
+                    }
+                }
+            }
+        });
+    }
+
+    function updateParams() {
+        currentAngle = parseInt(angleRange.value);
+        angleText.innerText = currentAngle;
+        resetSim();
+    }
+
+    function resetSim() {
+        const rad = currentAngle * Math.PI / 180;
+        const rampBottomX = startX + L * Math.cos(rad);
+        ball.s = 0; ball.x = startX; ball.y = groundY - L * Math.sin(rad);
+        cap.x = rampBottomX + 5; cap.slide = 0;
+        draw();
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const rad = currentAngle * Math.PI / 180;
+        const rampTopY = groundY - L * Math.sin(rad);
+        const rampBottomX = startX + L * Math.cos(rad);
+        ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(canvas.width, groundY); ctx.strokeStyle = "#95a5a6"; ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(startX, rampTopY); ctx.lineTo(rampBottomX, groundY); ctx.strokeStyle = "#34495e"; ctx.lineWidth = 4; ctx.stroke();
+        ctx.fillStyle = "#e74c3c"; ctx.fillRect(cap.x + cap.slide, groundY - capSize.h, capSize.w, capSize.h);
+        ctx.beginPath(); ctx.arc(ball.x, ball.y - ballR, ballR, 0, Math.PI * 2); ctx.fillStyle = "#3498db"; ctx.fill();
+    }
+
+    function animate() {
+        if (!isPlaying) return;
+        const rad = currentAngle * Math.PI / 180;
+        const speed = 2 + (currentAngle / 15);
+        if (ball.s < L) {
+            ball.s += speed;
+            ball.x = startX + ball.s * Math.cos(rad);
+            ball.y = (groundY - L * Math.sin(rad)) + ball.s * Math.sin(rad);
+        } else {
+            if (cap.slide < cap.targetSlide) {
+                cap.slide += (cap.targetSlide - cap.slide) * 0.1 + 0.2;
+                ball.x = (startX + L * Math.cos(rad)) + cap.slide * 0.8;
+                ball.y = groundY;
+            } else {
+                isPlaying = false; status.innerText = "完成";
+                addRecord(currentAngle, cap.targetSlide);
+                return;
+            }
+        }
+        draw();
+        requestAnimationFrame(animate);
+    }
+
+    function addRecord(ang, dist) {
+        if (!records[ang]) records[ang] = [];
+        records[ang].push(parseFloat(dist.toFixed(1)));
+        renderData();
+    }
+
+    function renderData() {
+        dataTable.innerHTML = "";
+        // 核心更新：初始數據集全部為空
+        let plotData = Array(8).fill(null); 
+
+        // 整理表格並計算平均
+        Object.keys(records).sort((a, b) => a - b).forEach(ang => {
+            let sum = 0;
+            records[ang].forEach((d, i) => {
+                sum += d;
+                let row = dataTable.insertRow();
+                row.innerHTML = `<td>${ang}°</td><td>${i+1}</td><td>${d}</td><td>-</td>`;
+            });
+            let avg = sum / records[ang].length;
+            let avgRow = dataTable.insertRow();
+            avgRow.className = "avg-row";
+            avgRow.innerHTML = `<td colspan="3">${ang}° 平均</td><td>${avg.toFixed(2)}</td>`;
+            
+            // 找出該角度對應 X 軸的索引 (0度=0, 10度=1...)
+            let index = parseInt(ang) / 10;
+            if (index >= 0 && index <= 7) {
+                plotData[index] = avg.toFixed(2);
+            }
+        });
+
+        // 更新圖表：只會有實測過的點顯示在對應位置上
+        myChart.data.datasets[0].data = plotData;
+        myChart.update();
+    }
+
+    runBtn.addEventListener('click', () => {
+        if (isPlaying) return;
+        resetSim();
+        const baseForce = Math.sin(currentAngle * Math.PI / 180) * 180;
+        cap.targetSlide = baseForce + (Math.random() * 0.2 - 0.1) * baseForce;
+        isPlaying = true; status.innerText = "實驗中...";
+        requestAnimationFrame(animate);
+    });
+
+    clearBtn.addEventListener('click', () => {
+        records = {}; dataTable.innerHTML = "";
+        myChart.data.datasets[0].data = Array(8).fill(null);
+        myChart.update();
+        status.innerText = "已重設"; resetSim();
+    });
+
+    angleRange.addEventListener('input', updateParams);
+    initChart();
+    updateParams();
+</script>
+</body>
+</html>
